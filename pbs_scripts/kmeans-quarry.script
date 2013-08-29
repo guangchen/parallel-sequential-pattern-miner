@@ -1,0 +1,93 @@
+#!/bin/sh
+
+#PBS -k o
+#PBS -l nodes=8:ppn=8,walltime=00:30:00
+#PBS -M yourusername@emailserver
+#PBS -m abe
+#PBS -N twister_kmeans
+#PBS -j oe
+#PBS -V
+
+# move to my $SCRATCH directory
+SCRATCH="/N/u/$USER/Quarry"
+cd $SCRATCH
+
+# copy JDK lib to $SCRATCH
+DIRNAME="jdk1.6.0_38"
+if [ ! -d $DIRNAME ];
+then
+        echo "$DIRNAME doesn't exist, copy it from $HOME/$DIRNAME"
+        cp -r $HOME/$DIRNAME .
+fi
+
+MASTER_NODE=`sort -u $PBS_NODEFILE | head -n 1`
+
+TWISTER_HOME="/N/u/$USER/Quarry/twister-0.9"
+ACTIVEMQ_HOME="/N/u/$USER/Quarry/apache-activemq-5.4.2"
+WORKER_NODES_FILE="$TWISTER_HOME/bin/nodes"
+APP_DIR="kmeans"
+APP_NAME="kmeans"
+
+# configure twister
+DAEMONS_PER_NODE=1
+WORKERS_PER_DAEMON=8
+DATA_DIR="/tmp/$USER/twister-0.9/data"
+
+$TWISTER_HOME/bin/configure_twister_hpc.sh $PBS_NODEFILE $DAEMONS_PER_NODE $WORKERS_PER_DAEMON $DATA_DIR
+
+echo "Finished configuring twister"
+
+# create data dir, cleanup first
+$TWISTER_HOME/bin/clean_nodes.sh $WORKER_NODES_FILE /tmp/$USER
+
+$TWISTER_HOME/bin/init_dir.sh $WORKER_NODES_FILE $DATA_DIR/$APP_DIR
+
+# cleanup zombie java processes
+$TWISTER_HOME/bin/kill_all_java_processes.sh $USER $MASTER_NODE
+
+# start activeMQ
+ssh $MASTER_NODE "$ACTIVEMQ_HOME/bin/activemq start"
+
+# sleep for a while
+sleep 10s
+
+ssh $MASTER_NODE "netstat -an | grep 61616"
+
+# start twister
+$TWISTER_HOME/bin/start_twister.sh
+
+sleep 10s
+
+echo "Twister started"
+
+#### Run your jobs here
+
+APP_HOME="$TWISTER_HOME/samples/$APP_NAME"
+
+# kmeans
+
+FILE_PREFIX="km_data"
+
+# generate data set
+ssh $MASTER_NODE "$APP_HOME/bin/gen_data.sh $APP_HOME/init_clusters.txt 2 3 $APP_DIR $FILE_PREFIX 80 80000"
+
+echo "Finished data set generation"
+
+# generate partition file
+ssh $MASTER_NODE "$TWISTER_HOME/bin/create_partition_file.sh $APP_DIR $FILE_PREFIX $APP_HOME/kmeans.pf"
+
+# run kmeans
+ssh $MASTER_NODE  "$APP_HOME/bin/run_kmeans.sh  $APP_HOME/init_clusters.txt 80  $APP_HOME/kmeans.pf"
+
+# stop and cleanup
+
+# stop twister
+$TWISTER_HOME/bin/stop_twister.sh
+
+sleep 10s
+
+# stop activeMQ
+ssh $MASTER_NODE "$ACTIVEMQ_HOME/bin/activemq stop"
+
+# cleanup
+$TWISTER_HOME/bin/clean_nodes.sh $WORKER_NODES_FILE /tmp/$USER

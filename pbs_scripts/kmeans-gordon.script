@@ -1,0 +1,105 @@
+#!/bin/bash
+#PBS -q normal
+#PBS -N twister-kmeans
+#PBS -l nodes=8:ppn=1:native
+#PBS -l walltime=00:30:00
+#PBS -M yourusername@emailserver
+#PBS -m abe
+#PBS -o twister_kmeans.out
+#PBS -e twister_kmeans.err
+#PBS -V
+
+# Set this to the location of ActiveMQ on gordon
+export ACTIVEMQ_HOME="$HOME/apache-activemq-5.4.2"
+
+# Set this to the location of Twister on gordon
+export TWISTER_HOME="$HOME/twister-0.9"
+
+# Use high-performance IPoIB interface
+sed 's/$/.ibnet0/' $PBS_NODEFILE > $PBS_O_WORKDIR/twisterhosts.txt
+export PBS_NODEFILEZ=$PBS_O_WORKDIR/twisterhosts.txt
+
+WORKER_NODES_FILE="$TWISTER_HOME/bin/nodes"
+APP_DIR="kmeans"
+APP_NAME="kmeans"
+
+#### Set up the configuration
+
+echo "Set up the configurations for twister"
+
+MASTER_NODE=`sort -u $PBS_NODEFILEZ | head -n 1`
+
+DAEMONS_PER_NODE=1
+WORKERS_PER_DAEMON=16
+
+# Use SSD
+DATA_DIR="/scratch/$USER/$PBS_JOBID/data"
+
+$TWISTER_HOME/bin/configure_twister_hpc.sh $PBS_NODEFILEZ $DAEMONS_PER_NODE $WORKERS_PER_DAEMON $DATA_DIR
+
+echo "Finished configuring twister"
+
+echo
+
+#### Start up services
+
+$TWISTER_HOME/bin/init_dir.sh $WORKER_NODES_FILE $DATA_DIR/$APP_DIR
+
+# cleanup zombie java processes if any
+echo "Cleanup zombie java processes if any"
+$TWISTER_HOME/bin/kill_all_java_processes.sh $USER $MASTER_NODE
+echo
+
+# start activeMQ
+ssh $MASTER_NODE "$ACTIVEMQ_HOME/bin/activemq start"
+
+# sleep for a while
+sleep 10s
+
+# check activeMQ is started
+nmap $MASTER_NODE -p 61616
+echo
+
+# start twister
+$TWISTER_HOME/bin/start_twister.sh
+
+sleep 10s
+
+echo "Twister started"
+
+#### Run your jobs here
+
+APP_HOME="$TWISTER_HOME/samples/$APP_NAME"
+
+# kmeans
+
+FILE_PREFIX="km_data"
+
+# generate data set
+ssh $MASTER_NODE "$APP_HOME/bin/gen_data.sh $APP_HOME/init_clusters.txt 2 3 $APP_DIR $FILE_PREFIX 80 80000"
+
+echo
+echo "Finished data set generation"
+
+# generate partition file
+ssh $MASTER_NODE "$TWISTER_HOME/bin/create_partition_file.sh $APP_DIR $FILE_PREFIX $APP_HOME/kmeans.pf"
+
+# run kmeans
+ssh $MASTER_NODE  "$APP_HOME/bin/run_kmeans.sh  $APP_HOME/init_clusters.txt 80  $APP_HOME/kmeans.pf"
+
+echo
+
+#### Stop services
+echo "Stop all twister daemons"
+$TWISTER_HOME/bin/stop_twister.sh
+echo
+
+sleep 10s
+
+echo "Stop activeMQ"
+ssh $MASTER_NODE "$ACTIVEMQ_HOME/bin/activemq stop"
+
+#### Clean up the working directories after job completion
+echo "Clean up"
+$TWISTER_HOME/bin/clean_nodes.sh $WORKER_NODES_FILE $DATA_DIR
+echo

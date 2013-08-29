@@ -1,0 +1,127 @@
+#!/bin/bash
+#PBS -q normal
+#PBS -N sequential-pattern-mining
+#PBS -l nodes=64:ppn=1:native
+#PBS -l walltime=01:00:00
+#PBS -M yourusername@emailserver
+#PBS -m abe
+#PBS -o twister_seqmining.out
+#PBS -e twister_seqmining.err
+#PBS -V
+
+# Set this to the location of ActiveMQ on gordon
+export ACTIVEMQ_HOME="$HOME/apache-activemq-5.4.2"
+
+# Set this to the location of Twister on gordon
+export TWISTER_HOME="$HOME/twister-0.9"
+
+# Use high-performance IPoIB interface
+sed 's/$/.ibnet0/' $PBS_NODEFILE > $PBS_O_WORKDIR/twisterhosts.txt
+export PBS_NODEFILEZ=$PBS_O_WORKDIR/twisterhosts.txt
+
+WORKER_NODES_FILE="$TWISTER_HOME/bin/nodes"
+APP_DIR="seqmining"
+APP_NAME="sequential-pattern-mining"
+
+#### Set up the configuration
+
+echo "Set up the configurations for twister"
+
+MASTER_NODE=`sort -u $PBS_NODEFILEZ | head -n 1`
+
+DAEMONS_PER_NODE=1
+WORKERS_PER_DAEMON=16
+
+# Use SSD
+DATA_DIR="/scratch/$USER/$PBS_JOBID/data"
+
+$TWISTER_HOME/bin/configure_twister_hpc.sh $PBS_NODEFILEZ $DAEMONS_PER_NODE $WORKERS_PER_DAEMON $DATA_DIR
+
+echo "Finished configuring twister"
+
+echo
+
+#### Start up services
+
+$TWISTER_HOME/bin/init_dir.sh $WORKER_NODES_FILE $DATA_DIR/$APP_DIR
+
+# cleanup zombie java processes if any
+echo "Cleanup zombie java processes if any"
+$TWISTER_HOME/bin/kill_all_java_processes.sh $USER $MASTER_NODE
+echo
+
+# start activeMQ
+ssh $MASTER_NODE "$ACTIVEMQ_HOME/bin/activemq start"
+
+# sleep for a while
+sleep 10s
+
+# check activeMQ is started
+ssh $MASTER_NODE "netstat -an | grep 61616"
+echo
+
+# start twister
+$TWISTER_HOME/bin/start_twister.sh
+
+sleep 10s
+
+echo "Twister started"
+
+#### Run your jobs here
+
+APP_HOME="$TWISTER_HOME/samples/$APP_NAME"
+
+# sequential pattern mining
+
+FILE_PREFIX="example-data"
+
+TEST_NUM=1
+#DATA_SET_PATH="/oasis/scratch/$USER/temp_project/scalability-test/test-$TEST_NUM/partitions"
+DATA_SET_PATH="$APP_HOME/scalability-test/test-$TEST_NUM/partitions"
+
+# distribute data set
+NUM_THREADS=12
+ssh $MASTER_NODE "cd $TWISTER_HOME/bin/ ; ./twister.sh put $DATA_SET_PATH /$APP_DIR $FILE_PREFIX $NUM_THREADS"
+
+echo
+echo "Finished data set distribution"
+
+# generate partition file
+ssh $MASTER_NODE "cd $TWISTER_HOME/bin/ ; ./create_partition_file.sh /$APP_DIR $FILE_PREFIX $APP_HOME/seqmining.pf"
+
+# run sequential pattern mining
+START=$(date +%s)
+
+# step 1. clustering
+ssh $MASTER_NODE  "cd $APP_HOME/ ; ./run_clustering.sh"
+
+# step 2. apriori
+ssh $MASTER_NODE  "cd $APP_HOME/ ; ./run_apriori.sh"
+
+# step 3. pattern adjustment
+ssh $MASTER_NODE  "cd $APP_HOME/ ; ./run_prob_adjust.sh"
+
+# step 4. visualization
+ssh -x $MASTER_NODE  "cd $APP_HOME/ ; ./run_visualization.sh"
+
+END=$(date +%s)
+DIFF=$(( $END - $START ))
+
+echo "It took $DIFF seconds"
+
+echo
+
+#### Stop services
+echo "Stop all twister daemons"
+$TWISTER_HOME/bin/stop_twister.sh
+echo
+
+sleep 10s
+
+echo "Stop activeMQ"
+ssh $MASTER_NODE "$ACTIVEMQ_HOME/bin/activemq stop"
+
+#### Clean up the working directories after job completion
+echo "Clean up"
+$TWISTER_HOME/bin/clean_nodes.sh $WORKER_NODES_FILE $DATA_DIR
+echo

@@ -1,0 +1,89 @@
+#!/bin/bash
+#PBS -q normal
+#PBS -N hadoop-process-image
+#PBS -l nodes=64:ppn=1:native
+#PBS -l walltime=01:00:00
+#PBS -M yourusername@emailserver
+#PBS -m abe
+#PBS -o hadoop_image_processing.out
+#PBS -e hadoop_image_processing.err
+#PBS -V
+
+# Set this to the location of Hadoop on gordon
+export HADOOP_HOME="/home/$USER/hadoop-1.0.4"
+
+# Set this to location of myHadoop on gordon
+export MY_HADOOP_HOME="$HADOOP_HOME/contrib/myHadoop"
+
+#### Set this to the directory where Hadoop configs should be generated
+# Don't change the name of this variable (HADOOP_CONF_DIR) as it is
+# required by Hadoop - all config files will be picked up from here
+#
+# Make sure that this is accessible to all nodes
+export HADOOP_CONF_DIR="/home/$USER/hadoop-config"
+
+#### Set up the configuration
+# Make sure number of nodes is the same as what you have requested from PBS
+# usage: $MY_HADOOP_HOME/bin/configure.sh -h
+echo "Set up the configurations for myHadoop"
+sed 's/$/.ibnet0/' $PBS_NODEFILE > $PBS_O_WORKDIR/hadoophosts.txt
+export PBS_NODEFILEZ=$PBS_O_WORKDIR/hadoophosts.txt
+$MY_HADOOP_HOME/bin/configure.sh -n 64 -c $HADOOP_CONF_DIR
+sed -i 's@HADDTEMP@'$PBS_JOBID'@g' $HADOOP_CONF_DIR/hadoop-env.sh
+echo
+
+#### Format HDFS, if this is the first time or not a persistent instance
+echo "Format HDFS"
+$HADOOP_HOME/bin/hadoop --config $HADOOP_CONF_DIR namenode -format
+echo
+sleep 120s
+#### Start the Hadoop cluster
+echo "Start all Hadoop daemons"
+$HADOOP_HOME/bin/start-all.sh
+echo
+
+#### Run your jobs here
+
+cd /home/$USER/mapreduce-image-processing
+
+# make directory in HDFS
+$HADOOP_HOME/bin/hadoop --config $HADOOP_CONF_DIR dfs -mkdir image_processing
+
+
+use_compression=true
+echo "compression=$use_compression"
+
+if $use_compression
+then
+        echo "Use compression"
+        image_folder="packed_compressed_images"
+else
+        echo "Not use compression"
+        image_folder="packed_uncompressed_images"
+fi
+
+full_path="/oasis/scratch/$USER/temp_project/image_results/$image_folder"
+
+# copy packed images in local fs to hdfs
+$HADOOP_HOME/bin/hadoop --config $HADOOP_CONF_DIR dfs -copyFromLocal $full_path image_processing
+
+# run image processing
+
+$HADOOP_HOME/bin/hadoop jar build/jar/mapreduce-image-processing-0.0.1.jar edu.indiana.d2i.image.mapreduce.ImageProcessingDriver -libjars lib/image.jar,lib/threed.jar,lib/javabuilder.jar -D mapred.child.java.opts=-Xmx4096m -D mapred.reduce.tasks=80 -files conf/image_metadata image_processing/$image_folder image_processing/roi_images
+
+# remove directory if it already exists
+rm -rf /home/$USER/image_results/roi_images
+
+$HADOOP_HOME/bin/hadoop --config $HADOOP_CONF_DIR dfs -copyToLocal image_processing/roi_images /home/$USER/image_results/
+
+echo
+
+#### Stop the Hadoop cluster
+echo "Stop all Hadoop daemons"
+$HADOOP_HOME/bin/stop-all.sh
+echo
+
+#### Clean up the working directories after job completion
+echo "Clean up"
+$MY_HADOOP_HOME/bin/cleanup.sh -n 64 
+echo
