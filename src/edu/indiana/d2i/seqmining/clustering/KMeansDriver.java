@@ -30,6 +30,7 @@ public class KMeansDriver {
 		// job configurations
 		JobConf jobConf = new JobConf("kmeans-map-reduce-"
 				+ uuidGen.generateTimeBasedUUID());
+
 		jobConf.setMapperClass(KMeansMapTask.class);
 		jobConf.setReducerClass(KMeansReduceTask.class);
 		jobConf.setCombinerClass(KMeansCombiner.class);

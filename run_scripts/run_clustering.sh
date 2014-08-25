@@ -5,6 +5,7 @@ if [ $# -ne 4 ]; then
     exit -1
 fi
 
+
 cp=$TWISTER_HOME/bin:.
 
 for i in ${TWISTER_HOME}/lib/*.jar; do

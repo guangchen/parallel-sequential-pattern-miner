@@ -10,10 +10,12 @@
 
 # move to my $SCRATCH directory
 SCRATCH="/N/u/$USER/Quarry"
+
 cd $SCRATCH
 
 # copy JDK lib to $SCRATCH
 DIRNAME="jdk1.6.0_38"
+
 if [ ! -d $DIRNAME ];
 then
         echo "$DIRNAME doesn't exist, copy it from $HOME/$DIRNAME"
